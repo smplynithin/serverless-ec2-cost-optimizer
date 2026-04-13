@@ -1,0 +1,13 @@
+{
+  "Name": "morning-ec2-start",
+  "ScheduleExpression": "cron(30 2 * * ? *)",
+  "Description": "Triggers Lambda to start dev EC2 instances at 8:00 AM IST (02:30 UTC) every day",
+  "State": "ENABLED",
+  "Targets": [
+    {
+      "Id": "ec2-lifecycle-manager-start",
+      "Arn": "arn:aws:lambda:us-east-1:YOUR_ACCOUNT_ID:function:ec2-lifecycle-manager",
+      "Input": "{\"action\": \"start\"}"
+    }
+  ]
+}
