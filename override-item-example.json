@@ -2,5 +2,42 @@
   "instance_id": {"S": "i-0faa1eb99978490e8"},
   "override": {"BOOL": true},
   "reason": {"S": "deploying tonight"},
-  "set_by": {"S": "Nithin"}
+  "set_by": {"S": "Nithin"},
+  "expires_at": {"N": "1744956600"}
 }
+
+// ──────────────────────────────────────────────────
+// FIELD EXPLANATIONS:
+//
+// instance_id  → Your EC2 instance ID (partition key)
+// override     → Must be true (BOOL type) for Lambda to skip this instance
+// reason       → Why the instance is protected — shows in email report
+// set_by       → Who added this override — for accountability
+// expires_at   → Unix timestamp — DynamoDB auto-deletes this record after this time
+//
+// ──────────────────────────────────────────────────
+// HOW TO CALCULATE expires_at (tomorrow 8 AM IST):
+//
+// Option 1 — Python:
+//   from datetime import datetime
+//   import pytz
+//   ist = pytz.timezone('Asia/Kolkata')
+//   expiry = datetime(2026, 4, 14, 8, 0, 0, tzinfo=ist)
+//   print(int(expiry.timestamp()))
+//   # Output: 1744956600
+//
+// Option 2 — Online:
+//   Go to https://epochconverter.com
+//   Pick tomorrow 8:00 AM IST
+//   Copy the Unix timestamp number
+//
+// ──────────────────────────────────────────────────
+// OVERRIDE LIFECYCLE WITH TTL:
+//
+//   9 PM  → Developer adds this record with expires_at = tomorrow 8 AM
+//   11 PM → Lambda sees override=true → skips the instance ✅
+//   8 AM  → DynamoDB TTL auto-deletes this record ✅
+//   11 PM → Lambda finds no override → stops the instance ✅
+//
+// No manual cleanup needed. No forgotten overrides. 🎯
+// ──────────────────────────────────────────────────
