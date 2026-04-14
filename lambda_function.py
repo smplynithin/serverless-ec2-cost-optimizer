@@ -14,8 +14,14 @@ ddb = boto3.resource('dynamodb', region_name=REGION)
 sns = boto3.client('sns', region_name=REGION)
 s3  = boto3.client('s3', region_name=REGION)
 
-def get_tagged_instances():
-    filters = [{'Name': 'instance-state-name', 'Values': ['running']}]
+
+def get_tagged_instances(state='running'):
+    """
+    Search EC2 for instances with target tags.
+    - stop job  → searches for 'running'  instances
+    - start job → searches for 'stopped'  instances
+    """
+    filters = [{'Name': 'instance-state-name', 'Values': [state]}]
     for key, value in TARGET_TAGS.items():
         filters.append({'Name': f'tag:{key}', 'Values': [value]})
 
@@ -30,7 +36,13 @@ def get_tagged_instances():
             instances.append({'id': instance['InstanceId'], 'name': name})
     return instances
 
+
 def check_override(instance_id):
+    """
+    Check DynamoDB if this instance has an active override.
+    If override=true exists → Lambda will skip this instance.
+    TTL (expires_at) ensures old overrides are auto-deleted by DynamoDB.
+    """
     table = ddb.Table(DDB_TABLE)
     response = table.get_item(Key={'instance_id': instance_id})
     item = response.get('Item')
@@ -38,14 +50,27 @@ def check_override(instance_id):
         return item
     return None
 
+
 def save_log_to_s3(log_data):
+    """
+    Save full run report as JSON to S3 for audit trail.
+    File path: logs/YYYY-MM-DD_HH-MM.json
+    """
     date_str = datetime.now().strftime('%Y-%m-%d_%H-%M')
     key = f"logs/{date_str}.json"
-    s3.put_object(Bucket=S3_BUCKET, Key=key,
-                  Body=json.dumps(log_data, indent=2),
-                  ContentType='application/json')
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=key,
+        Body=json.dumps(log_data, indent=2),
+        ContentType='application/json'
+    )
+
 
 def send_email_report(stopped, skipped):
+    """
+    Send email via SNS with a clear summary of what was stopped/started
+    and what was skipped due to override protection.
+    """
     stop_lines = '\n'.join([f"  - {i['name']} ({i['id']}) STOPPED" for i in stopped]) or '  None'
     skip_lines = '\n'.join([f"  - {i['name']} ({i['id']}) SKIPPED — {i['reason']}" for i in skipped]) or '  None'
 
@@ -62,13 +87,34 @@ Skipped — override active ({len(skipped)}):
 
 Audit log: s3://{S3_BUCKET}
     """
-    sns.publish(TopicArn=SNS_TOPIC_ARN,
-                Subject=f'EC2 Report — {len(stopped)} stopped, {len(skipped)} skipped',
-                Message=message)
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=f'EC2 Report — {len(stopped)} stopped, {len(skipped)} skipped',
+        Message=message
+    )
+
 
 def lambda_handler(event, context):
+    """
+    Main entry point triggered by EventBridge.
+
+    Stop job  (11 PM IST): event = {"action": "stop"}
+      → searches RUNNING instances → checks override → stops if no override
+
+    Start job (8 AM IST):  event = {"action": "start"}
+      → searches STOPPED instances → checks override → starts if no override
+
+    BUG FIX: start job must search for STOPPED instances, not running ones.
+    Original code searched for 'running' regardless of action — so start job
+    found 0 instances and never started anything.
+    """
     action = event.get('action', 'stop')
-    instances = get_tagged_instances()
+
+    # ── KEY FIX: use correct state filter based on action ──
+    if action == 'stop':
+        instances = get_tagged_instances(state='running')
+    else:
+        instances = get_tagged_instances(state='stopped')
 
     stopped, skipped = [], []
 
@@ -83,9 +129,17 @@ def lambda_handler(event, context):
                 ec2.start_instances(InstanceIds=[instance['id']])
             stopped.append(instance)
 
-    log = {'timestamp': datetime.now().isoformat(), 'action': action,
-           'stopped_or_started': stopped, 'skipped': skipped}
+    log = {
+        'timestamp': datetime.now().isoformat(),
+        'action': action,
+        'stopped_or_started': stopped,
+        'skipped': skipped
+    }
     save_log_to_s3(log)
     send_email_report(stopped, skipped)
 
-    return {'statusCode': 200, 'processed': len(stopped), 'skipped': len(skipped)}
+    return {
+        'statusCode': 200,
+        'processed': len(stopped),
+        'skipped': len(skipped)
+    }
